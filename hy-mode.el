@@ -717,6 +717,30 @@ a string or comment."
 (defconst hy--shell-spy-delim-uuid "#cbb4fcbe-b6ba-4812-afa3-4a5ac7b20501"
   "UUID denoting end of python block in `--spy --control-categories' output")
 
+;;;; Shell macros
+
+(defmacro hy--shell-with-shell-buffer (&rest forms)
+  "Execute FORMS in the shell buffer."
+  (-let [shell-process
+         (gensym)]
+    `(-let [,shell-process
+            (hy-shell-get-process)]
+       (with-current-buffer (process-buffer ,shell-process)
+         ,@forms))))
+
+(defmacro hy--shell-with-font-locked-shell-buffer (&rest forms)
+  "Execute FORMS in the shell buffer with font-lock turned on."
+  `(hy--shell-with-shell-buffer
+    (save-current-buffer
+      (unless (hy--shell-buffer?)
+        (setq hy-shell-buffer (hy--shell-get-or-create-buffer)))
+      (set-buffer hy-shell-buffer)
+
+      (unless (font-lock-mode) (font-lock-mode 1))
+      (unless (derived-mode-p 'hy-mode) (hy-mode))
+
+      ,@forms)))
+
 ;;;; Shell buffer utilities
 
 (defun hy-installed? ()
@@ -774,30 +798,6 @@ a string or comment."
   "Kill all hy processes."
   (hy--shell-kill-buffer)
   (hy--shell-kill-buffer 'internal))
-
-;;;; Shell macros
-
-(defmacro hy--shell-with-shell-buffer (&rest forms)
-  "Execute FORMS in the shell buffer."
-  (-let [shell-process
-         (gensym)]
-    `(-let [,shell-process
-            (hy-shell-get-process)]
-       (with-current-buffer (process-buffer ,shell-process)
-         ,@forms))))
-
-(defmacro hy--shell-with-font-locked-shell-buffer (&rest forms)
-  "Execute FORMS in the shell buffer with font-lock turned on."
-  `(hy--shell-with-shell-buffer
-    (save-current-buffer
-      (unless (hy--shell-buffer?)
-        (setq hy-shell-buffer (hy--shell-get-or-create-buffer)))
-      (set-buffer hy-shell-buffer)
-
-      (unless (font-lock-mode) (font-lock-mode 1))
-      (unless (derived-mode-p 'hy-mode) (hy-mode))
-
-      ,@forms)))
 
 ;;;; Font locking
 
@@ -886,6 +886,8 @@ Constantly extracts current prompt text and executes and manages applying
     (unless process
       (error "No active Hy process found/given!"))
     (comint-send-string process string)
+    (unless (equal process (hy-shell-get-process 'internal))
+      (hy--shell-send-async string))
     (when (or (not (string-match "\n\\'" string))
               (string-match "\n[ \t].*\n?\\'" string))
       (comint-send-string process "\n"))))
@@ -1563,6 +1565,11 @@ Not all defuns can be argspeced - eg. C defuns.\"
 
 ;;;; Inferior-hy-mode setup
 
+(defun hy--shell-redirect-string-to-internal (string)
+  (when (equal (hy--shell-current-buffer-process)
+               (hy-shell-get-process))
+    (hy--shell-send-async string)))
+
 (defun hy--inferior-mode-setup ()
   ;; Comint config
   (setq mode-line-process '(":%s"))
@@ -1573,6 +1580,10 @@ Not all defuns can be argspeced - eg. C defuns.\"
   ;; Highlight errors according to colorama python package
   (ansi-color-for-comint-mode-on)
   (setq-local comint-output-filter-functions '(ansi-color-process-output))
+
+  ;; Redirect commands entered into shell buffer to internal shell buffer
+  (setq-local comint-input-filter-functions
+              '(hy--shell-redirect-string-to-internal))
 
   ;; Don't startup font lock for internal processes
   (when hy--shell-font-lock-enable
